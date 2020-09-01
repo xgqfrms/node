@@ -19,7 +19,7 @@ accessible.
 
 ## Class: `AbortController`
 <!--YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 > Stability: 1 - Experimental
@@ -42,7 +42,7 @@ console.log(ac.signal.aborted);  // Prints True
 
 ### `abortController.abort()`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 Triggers the abort signal, causing the `abortController.signal` to emit
@@ -50,14 +50,14 @@ the `'abort'` event.
 
 ### `abortController.signal`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 * Type: {AbortSignal}
 
 ### Class: `AbortSignal`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 * Extends: {EventTarget}
@@ -67,7 +67,7 @@ The `AbortSignal` is used to notify observers when the
 
 #### Event: `'abort'`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 The `'abort'` event is emitted when the `abortController.abort()` method
@@ -97,14 +97,14 @@ Failure to do so may result in memory leaks.
 
 #### `abortSignal.aborted`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 * Type: {boolean} True after the `AbortController` has been aborted.
 
 #### `abortSignal.onabort`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 * Type: {Function}

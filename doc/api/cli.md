@@ -203,9 +203,9 @@ Currently, overriding `Error.prepareStackTrace` is ignored when the
 
 ### `--experimental-abortcontroller`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 changes:
-  - version: REPLACEME
+  - version: v15.0.0
     pr-url: https://github.com/nodejs/node/pull/33527
     description: --experimental-abortcontroller is no longer required.
 -->

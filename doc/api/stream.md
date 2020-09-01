@@ -423,7 +423,7 @@ Is `true` after [`writable.destroy()`][writable-destroy] has been called.
 <!-- YAML
 added: v0.9.4
 changes:
-  - version: REPLACEME
+  - version: v15.0.0
     pr-url: https://github.com/nodejs/node/pull/34101
     description: The `callback` is invoked before 'finish' or on error.
   - version: v14.0.0
@@ -1969,7 +1969,7 @@ const myWritable = new Writable({
 
 #### `writable._construct(callback)`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 * `callback` {Function} Call this function (optionally with an error
@@ -2287,7 +2287,7 @@ const myReadable = new Readable({
 
 #### `readable._construct(callback)`
 <!-- YAML
-added: REPLACEME
+added: v15.0.0
 -->
 
 * `callback` {Function} Call this function (optionally with an error
