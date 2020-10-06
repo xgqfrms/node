@@ -68,10 +68,17 @@ Handle<JSObject> CreateKey(const char* key_prop_value, Isolate* isolate) {
 
 Handle<WeakCell> FinalizationRegistryRegister(
     Handle<JSFinalizationRegistry> finalization_registry,
-    Handle<JSObject> target, Handle<Object> holdings, Handle<Object> key,
-    Isolate* isolate) {
-  JSFinalizationRegistry::Register(finalization_registry, target, holdings, key,
-                                   isolate);
+    Handle<JSObject> target, Handle<Object> held_value,
+    Handle<Object> unregister_token, Isolate* isolate) {
+  Factory* factory = isolate->factory();
+  Handle<JSFunction> regfunc = Handle<JSFunction>::cast(
+      Object::GetProperty(isolate, finalization_registry,
+                          factory->NewStringFromStaticChars("register"))
+          .ToHandleChecked());
+  Handle<Object> args[] = {target, held_value, unregister_token};
+  Execution::Call(isolate, regfunc, finalization_registry, arraysize(args),
+                  args)
+      .ToHandleChecked();
   CHECK(finalization_registry->active_cells().IsWeakCell());
   Handle<WeakCell> weak_cell =
       handle(WeakCell::cast(finalization_registry->active_cells()), isolate);
@@ -877,7 +884,7 @@ TEST(TestRemoveUnregisterToken) {
 
 TEST(JSWeakRefScavengedInWorklist) {
   FLAG_harmony_weak_refs = true;
-  if (!FLAG_incremental_marking) {
+  if (!FLAG_incremental_marking || FLAG_single_generation) {
     return;
   }
 
@@ -904,17 +911,11 @@ TEST(JSWeakRefScavengedInWorklist) {
 
     // Do marking. This puts the WeakRef above into the js_weak_refs worklist
     // since its target isn't marked.
-    CHECK(
-        heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
     heap::SimulateIncrementalMarking(heap, true);
-    CHECK(!heap->mark_compact_collector()
-               ->weak_objects()
-               ->js_weak_refs.IsEmpty());
   }
 
   // Now collect both weak_ref and its target. The worklist should be empty.
   CcTest::CollectGarbage(NEW_SPACE);
-  CHECK(heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
 
   // The mark-compactor shouldn't see zapped WeakRefs in the worklist.
   CcTest::CollectAllGarbage();
@@ -922,7 +923,7 @@ TEST(JSWeakRefScavengedInWorklist) {
 
 TEST(JSWeakRefTenuredInWorklist) {
   FLAG_harmony_weak_refs = true;
-  if (!FLAG_incremental_marking) {
+  if (!FLAG_incremental_marking || FLAG_single_generation) {
     return;
   }
 
@@ -949,23 +950,64 @@ TEST(JSWeakRefTenuredInWorklist) {
 
   // Do marking. This puts the WeakRef above into the js_weak_refs worklist
   // since its target isn't marked.
-  CHECK(heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
   heap::SimulateIncrementalMarking(heap, true);
-  CHECK(
-      !heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
 
   // Now collect weak_ref's target. We still have a Handle to weak_ref, so it is
   // moved and remains on the worklist.
   CcTest::CollectGarbage(NEW_SPACE);
   JSWeakRef new_weak_ref_location = *weak_ref;
   CHECK_NE(old_weak_ref_location, new_weak_ref_location);
-  CHECK(
-      !heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
 
   // The mark-compactor should see the moved WeakRef in the worklist.
   CcTest::CollectAllGarbage();
-  CHECK(heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
   CHECK(weak_ref->target().IsUndefined(isolate));
+}
+
+TEST(UnregisterTokenHeapVerifier) {
+  FLAG_harmony_weak_refs = true;
+  if (!FLAG_incremental_marking) return;
+  ManualGCScope manual_gc_scope;
+#ifdef VERIFY_HEAP
+  FLAG_verify_heap = true;
+#endif
+
+  CcTest::InitializeVM();
+  v8::Isolate* isolate = CcTest::isolate();
+  Heap* heap = CcTest::heap();
+  v8::HandleScope outer_scope(isolate);
+
+  {
+    // Make a new FinalizationRegistry and register an object with an unregister
+    // token that's unreachable after the IIFE returns.
+    v8::HandleScope scope(isolate);
+    CompileRun(
+        "var token = {}; "
+        "var registry = new FinalizationRegistry(function ()  {}); "
+        "(function () { "
+        "  let o = {}; "
+        "  registry.register(o, {}, token); "
+        "})();");
+  }
+
+  // GC so the WeakCell corresponding to o is moved from the active_cells to
+  // cleared_cells.
+  CcTest::CollectAllGarbage();
+  CcTest::CollectAllGarbage();
+
+  {
+    // Override the unregister token to make the original object collectible.
+    v8::HandleScope scope(isolate);
+    CompileRun("token = 0;");
+  }
+
+  heap::SimulateIncrementalMarking(heap, true);
+
+  // Pump message loop to run the finalizer task, then the incremental marking
+  // task. The finalizer task will pop the WeakCell from the cleared list. This
+  // should make the unregister_token slot undefined. That slot is iterated as a
+  // custom weak pointer, so if it is not made undefined, the verifier as part
+  // of the incremental marking task will crash.
+  EmptyMessageQueues(isolate);
 }
 
 }  // namespace internal

@@ -335,7 +335,7 @@ class WasmOutOfLineTrap : public OutOfLineCode {
       // is added to the native module and copied into wasm code space.
       __ near_call(static_cast<Address>(trap_id), RelocInfo::WASM_STUB_CALL);
       ReferenceMap* reference_map =
-          new (gen_->zone()) ReferenceMap(gen_->zone());
+          gen_->zone()->New<ReferenceMap>(gen_->zone());
       gen_->RecordSafepoint(reference_map, Safepoint::kNoLazyDeopt);
       __ AssertUnreachable(AbortReason::kUnexpectedReturnFromWasmTrap);
     }
@@ -364,7 +364,7 @@ void EmitOOLTrapIfNeeded(Zone* zone, CodeGenerator* codegen,
   const MemoryAccessMode access_mode =
       static_cast<MemoryAccessMode>(MiscField::decode(opcode));
   if (access_mode == kMemoryAccessProtected) {
-    new (zone) WasmProtectedInstructionTrap(codegen, pc, instr);
+    zone->New<WasmProtectedInstructionTrap>(codegen, pc, instr);
   }
 }
 
@@ -487,13 +487,19 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
     }                                                       \
   } while (false)
 
-#define ASSEMBLE_SSE_BINOP(asm_instr)                                   \
-  do {                                                                  \
-    if (instr->InputAt(1)->IsFPRegister()) {                            \
-      __ asm_instr(i.InputDoubleRegister(0), i.InputDoubleRegister(1)); \
-    } else {                                                            \
-      __ asm_instr(i.InputDoubleRegister(0), i.InputOperand(1));        \
-    }                                                                   \
+#define ASSEMBLE_SSE_BINOP(asm_instr)                                     \
+  do {                                                                    \
+    if (HasAddressingMode(instr)) {                                       \
+      size_t index = 1;                                                   \
+      Operand right = i.MemoryOperand(&index);                            \
+      __ asm_instr(i.InputDoubleRegister(0), right);                      \
+    } else {                                                              \
+      if (instr->InputAt(1)->IsFPRegister()) {                            \
+        __ asm_instr(i.InputDoubleRegister(0), i.InputDoubleRegister(1)); \
+      } else {                                                            \
+        __ asm_instr(i.InputDoubleRegister(0), i.InputOperand(1));        \
+      }                                                                   \
+    }                                                                     \
   } while (false)
 
 #define ASSEMBLE_SSE_UNOP(asm_instr)                                    \
@@ -505,16 +511,22 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
     }                                                                   \
   } while (false)
 
-#define ASSEMBLE_AVX_BINOP(asm_instr)                                  \
-  do {                                                                 \
-    CpuFeatureScope avx_scope(tasm(), AVX);                            \
-    if (instr->InputAt(1)->IsFPRegister()) {                           \
-      __ asm_instr(i.OutputDoubleRegister(), i.InputDoubleRegister(0), \
-                   i.InputDoubleRegister(1));                          \
-    } else {                                                           \
-      __ asm_instr(i.OutputDoubleRegister(), i.InputDoubleRegister(0), \
-                   i.InputOperand(1));                                 \
-    }                                                                  \
+#define ASSEMBLE_AVX_BINOP(asm_instr)                                          \
+  do {                                                                         \
+    CpuFeatureScope avx_scope(tasm(), AVX);                                    \
+    if (HasAddressingMode(instr)) {                                            \
+      size_t index = 1;                                                        \
+      Operand right = i.MemoryOperand(&index);                                 \
+      __ asm_instr(i.OutputDoubleRegister(), i.InputDoubleRegister(0), right); \
+    } else {                                                                   \
+      if (instr->InputAt(1)->IsFPRegister()) {                                 \
+        __ asm_instr(i.OutputDoubleRegister(), i.InputDoubleRegister(0),       \
+                     i.InputDoubleRegister(1));                                \
+      } else {                                                                 \
+        __ asm_instr(i.OutputDoubleRegister(), i.InputDoubleRegister(0),       \
+                     i.InputOperand(1));                                       \
+      }                                                                        \
+    }                                                                          \
   } while (false)
 
 #define ASSEMBLE_IEEE754_BINOP(name)                                     \
@@ -579,10 +591,14 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
     ASSEMBLE_SIMD_INSTR(opcode, dst, input_index);       \
   } while (false)
 
-#define ASSEMBLE_SIMD_IMM_SHUFFLE(opcode, imm)                            \
-  do {                                                                    \
-    DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));      \
-    __ opcode(i.OutputSimd128Register(), i.InputSimd128Register(1), imm); \
+#define ASSEMBLE_SIMD_IMM_SHUFFLE(opcode, imm)                              \
+  do {                                                                      \
+    DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));        \
+    if (instr->InputAt(1)->IsSimd128Register()) {                           \
+      __ opcode(i.OutputSimd128Register(), i.InputSimd128Register(1), imm); \
+    } else {                                                                \
+      __ opcode(i.OutputSimd128Register(), i.InputOperand(1), imm);         \
+    }                                                                       \
   } while (false)
 
 #define ASSEMBLE_SIMD_ALL_TRUE(opcode)          \
@@ -653,13 +669,33 @@ void CodeGenerator::AssemblePopArgumentsAdaptorFrame(Register args_reg,
 
 namespace {
 
-void AdjustStackPointerForTailCall(TurboAssembler* assembler,
+void AdjustStackPointerForTailCall(Instruction* instr,
+                                   TurboAssembler* assembler, Linkage* linkage,
+                                   OptimizedCompilationInfo* info,
                                    FrameAccessState* state,
                                    int new_slot_above_sp,
                                    bool allow_shrinkage = true) {
-  int current_sp_offset = state->GetSPToFPSlotCount() +
-                          StandardFrameConstants::kFixedSlotCountAboveFp;
-  int stack_slot_delta = new_slot_above_sp - current_sp_offset;
+  int stack_slot_delta;
+  if (HasCallDescriptorFlag(instr, CallDescriptor::kIsTailCallForTierUp)) {
+    // For this special tail-call mode, the callee has the same arguments and
+    // linkage as the caller, and arguments adapter frames must be preserved.
+    // Thus we simply have reset the stack pointer register to its original
+    // value before frame construction.
+    // See also: AssembleConstructFrame.
+    DCHECK(!info->is_osr());
+    DCHECK_EQ(linkage->GetIncomingDescriptor()->CalleeSavedRegisters(), 0);
+    DCHECK_EQ(linkage->GetIncomingDescriptor()->CalleeSavedFPRegisters(), 0);
+    DCHECK_EQ(state->frame()->GetReturnSlotCount(), 0);
+    stack_slot_delta = (state->frame()->GetTotalFrameSlotCount() -
+                        kReturnAddressStackSlotCount) *
+                       -1;
+    DCHECK_LE(stack_slot_delta, 0);
+  } else {
+    int current_sp_offset = state->GetSPToFPSlotCount() +
+                            StandardFrameConstants::kFixedSlotCountAboveFp;
+    stack_slot_delta = new_slot_above_sp - current_sp_offset;
+  }
+
   if (stack_slot_delta > 0) {
     assembler->AllocateStackSpace(stack_slot_delta * kSystemPointerSize);
     state->IncreaseSPDelta(stack_slot_delta);
@@ -669,13 +705,10 @@ void AdjustStackPointerForTailCall(TurboAssembler* assembler,
   }
 }
 
-void SetupShuffleMaskInTempRegister(TurboAssembler* assembler, uint32_t* mask,
-                                    XMMRegister tmp) {
-  uint64_t shuffle_mask = (mask[0]) | (uint64_t{mask[1]} << 32);
-  assembler->Move(tmp, shuffle_mask);
-  shuffle_mask = (mask[2]) | (uint64_t{mask[3]} << 32);
-  assembler->movq(kScratchRegister, shuffle_mask);
-  assembler->Pinsrq(tmp, kScratchRegister, int8_t{1});
+void SetupSimdImmediateInRegister(TurboAssembler* assembler, uint32_t* imms,
+                                  XMMRegister reg) {
+  assembler->Move(reg, make_uint64(imms[3], imms[2]),
+                  make_uint64(imms[1], imms[0]));
 }
 
 }  // namespace
@@ -689,12 +722,14 @@ void CodeGenerator::AssembleTailCallBeforeGap(Instruction* instr,
   if (!pushes.empty() &&
       (LocationOperand::cast(pushes.back()->destination()).index() + 1 ==
        first_unused_stack_slot)) {
+    DCHECK(!HasCallDescriptorFlag(instr, CallDescriptor::kIsTailCallForTierUp));
     X64OperandConverter g(this, instr);
     for (auto move : pushes) {
       LocationOperand destination_location(
           LocationOperand::cast(move->destination()));
       InstructionOperand source(move->source());
-      AdjustStackPointerForTailCall(tasm(), frame_access_state(),
+      AdjustStackPointerForTailCall(instr, tasm(), linkage(), info(),
+                                    frame_access_state(),
                                     destination_location.index());
       if (source.IsStackSlot()) {
         LocationOperand source_location(LocationOperand::cast(source));
@@ -712,14 +747,15 @@ void CodeGenerator::AssembleTailCallBeforeGap(Instruction* instr,
       move->Eliminate();
     }
   }
-  AdjustStackPointerForTailCall(tasm(), frame_access_state(),
-                                first_unused_stack_slot, false);
+  AdjustStackPointerForTailCall(instr, tasm(), linkage(), info(),
+                                frame_access_state(), first_unused_stack_slot,
+                                false);
 }
 
 void CodeGenerator::AssembleTailCallAfterGap(Instruction* instr,
                                              int first_unused_stack_slot) {
-  AdjustStackPointerForTailCall(tasm(), frame_access_state(),
-                                first_unused_stack_slot);
+  AdjustStackPointerForTailCall(instr, tasm(), linkage(), info(),
+                                frame_access_state(), first_unused_stack_slot);
 }
 
 // Check that {kJavaScriptCallCodeStartRegister} is correct.
@@ -823,12 +859,13 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kArchTailCallCodeObjectFromJSFunction:
-    case kArchTailCallCodeObject: {
-      if (arch_opcode == kArchTailCallCodeObjectFromJSFunction) {
+      if (!HasCallDescriptorFlag(instr, CallDescriptor::kIsTailCallForTierUp)) {
         AssemblePopArgumentsAdaptorFrame(kJavaScriptCallArgCountRegister,
                                          i.TempRegister(0), i.TempRegister(1),
                                          i.TempRegister(2));
       }
+      V8_FALLTHROUGH;
+    case kArchTailCallCodeObject: {
       if (HasImmediateInput(instr, 0)) {
         Handle<Code> code = i.InputCode(0);
         __ Jump(code, RelocInfo::CODE_TARGET);
@@ -1060,7 +1097,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchTruncateDoubleToI: {
       auto result = i.OutputRegister();
       auto input = i.InputDoubleRegister(0);
-      auto ool = new (zone()) OutOfLineTruncateDoubleToI(
+      auto ool = zone()->New<OutOfLineTruncateDoubleToI>(
           this, result, input, DetermineStubCallMode(),
           &unwinding_info_writer_);
       // We use Cvttsd2siq instead of Cvttsd2si due to performance reasons. The
@@ -1081,9 +1118,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       Register value = i.InputRegister(index);
       Register scratch0 = i.TempRegister(0);
       Register scratch1 = i.TempRegister(1);
-      auto ool = new (zone())
-          OutOfLineRecordWrite(this, object, operand, value, scratch0, scratch1,
-                               mode, DetermineStubCallMode());
+      auto ool = zone()->New<OutOfLineRecordWrite>(this, object, operand, value,
+                                                   scratch0, scratch1, mode,
+                                                   DetermineStubCallMode());
       __ StoreTaggedField(operand, value);
       __ CheckPageFlag(object, scratch0,
                        MemoryChunk::kPointersFromHereAreInterestingMask,
@@ -1479,7 +1516,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ Ucomiss(i.InputDoubleRegister(0), i.InputOperand(1));
       }
       auto ool =
-          new (zone()) OutOfLineLoadFloat32NaN(this, i.OutputDoubleRegister());
+          zone()->New<OutOfLineLoadFloat32NaN>(this, i.OutputDoubleRegister());
       __ j(parity_even, ool->entry());
       __ j(above, &done_compare, Label::kNear);
       __ j(below, &compare_swap, Label::kNear);
@@ -1504,7 +1541,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ Ucomiss(i.InputDoubleRegister(0), i.InputOperand(1));
       }
       auto ool =
-          new (zone()) OutOfLineLoadFloat32NaN(this, i.OutputDoubleRegister());
+          zone()->New<OutOfLineLoadFloat32NaN>(this, i.OutputDoubleRegister());
       __ j(parity_even, ool->entry());
       __ j(below, &done_compare, Label::kNear);
       __ j(above, &compare_swap, Label::kNear);
@@ -1534,7 +1571,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ Ucomisd(i.InputDoubleRegister(0), i.InputOperand(1));
       }
       auto ool =
-          new (zone()) OutOfLineLoadFloat64NaN(this, i.OutputDoubleRegister());
+          zone()->New<OutOfLineLoadFloat64NaN>(this, i.OutputDoubleRegister());
       __ j(parity_even, ool->entry());
       __ j(above, &done_compare, Label::kNear);
       __ j(below, &compare_swap, Label::kNear);
@@ -1559,7 +1596,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ Ucomisd(i.InputDoubleRegister(0), i.InputOperand(1));
       }
       auto ool =
-          new (zone()) OutOfLineLoadFloat64NaN(this, i.OutputDoubleRegister());
+          zone()->New<OutOfLineLoadFloat64NaN>(this, i.OutputDoubleRegister());
       __ j(parity_even, ool->entry());
       __ j(below, &done_compare, Label::kNear);
       __ j(above, &compare_swap, Label::kNear);
@@ -2259,6 +2296,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       int slot = MiscField::decode(instr->opcode());
       if (HasImmediateInput(instr, 0)) {
         __ movq(Operand(rsp, slot * kSystemPointerSize), i.InputImmediate(0));
+      } else if (instr->InputAt(0)->IsFPRegister()) {
+        LocationOperand* op = LocationOperand::cast(instr->InputAt(0));
+        if (op->representation() == MachineRepresentation::kFloat64) {
+          __ Movsd(Operand(rsp, slot * kSystemPointerSize),
+                   i.InputDoubleRegister(0));
+        } else {
+          DCHECK_EQ(MachineRepresentation::kFloat32, op->representation());
+          __ Movss(Operand(rsp, slot * kSystemPointerSize),
+                   i.InputFloatRegister(0));
+        }
       } else {
         __ movq(Operand(rsp, slot * kSystemPointerSize), i.InputRegister(0));
       }
@@ -2272,9 +2319,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         LocationOperand* op = LocationOperand::cast(instr->OutputAt(0));
         if (op->representation() == MachineRepresentation::kFloat64) {
           __ Movsd(i.OutputDoubleRegister(), Operand(rbp, offset));
-        } else {
-          DCHECK_EQ(MachineRepresentation::kFloat32, op->representation());
+        } else if (op->representation() == MachineRepresentation::kFloat32) {
           __ Movss(i.OutputFloatRegister(), Operand(rbp, offset));
+        } else {
+          DCHECK_EQ(MachineRepresentation::kSimd128, op->representation());
+          __ Movdqu(i.OutputSimd128Register(), Operand(rbp, offset));
         }
       } else {
         __ movq(i.OutputRegister(), Operand(rbp, offset));
@@ -2293,9 +2342,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kX64F64x2ReplaceLane: {
       if (instr->InputAt(2)->IsFPRegister()) {
         __ Movq(kScratchRegister, i.InputDoubleRegister(2));
-        __ Pinsrq(i.OutputSimd128Register(), kScratchRegister, i.InputInt8(1));
+        __ Pinsrq(i.OutputSimd128Register(), kScratchRegister, i.InputUint8(1));
       } else {
-        __ Pinsrq(i.OutputSimd128Register(), i.InputOperand(2), i.InputInt8(1));
+        __ Pinsrq(i.OutputSimd128Register(), i.InputOperand(2),
+                  i.InputUint8(1));
       }
       break;
     }
@@ -2619,6 +2669,18 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Maxps(dst, i.InputSimd128Register(1));
       break;
     }
+    case kX64F32x4Round: {
+      RoundingMode const mode =
+          static_cast<RoundingMode>(MiscField::decode(instr->opcode()));
+      __ Roundps(i.OutputSimd128Register(), i.InputSimd128Register(0), mode);
+      break;
+    }
+    case kX64F64x2Round: {
+      RoundingMode const mode =
+          static_cast<RoundingMode>(MiscField::decode(instr->opcode()));
+      __ Roundpd(i.OutputSimd128Register(), i.InputSimd128Register(0), mode);
+      break;
+    }
     case kX64F64x2Pmin: {
       XMMRegister dst = i.OutputSimd128Register();
       DCHECK_EQ(dst, i.InputSimd128Register(0));
@@ -2648,9 +2710,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kX64I64x2ReplaceLane: {
       if (HasRegisterInput(instr, 2)) {
         __ Pinsrq(i.OutputSimd128Register(), i.InputRegister(2),
-                  i.InputInt8(1));
+                  i.InputUint8(1));
       } else {
-        __ Pinsrq(i.OutputSimd128Register(), i.InputOperand(2), i.InputInt8(1));
+        __ Pinsrq(i.OutputSimd128Register(), i.InputOperand(2),
+                  i.InputUint8(1));
       }
       break;
     }
@@ -2681,12 +2744,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       // lower quadword
       __ Pextrq(tmp, src, int8_t{0x0});
       __ sarq_cl(tmp);
-      __ Pinsrq(dst, tmp, int8_t{0x0});
+      __ Pinsrq(dst, tmp, uint8_t{0x0});
 
       // upper quadword
       __ Pextrq(tmp, src, int8_t{0x1});
       __ sarq_cl(tmp);
-      __ Pinsrq(dst, tmp, int8_t{0x1});
+      __ Pinsrq(dst, tmp, uint8_t{0x1});
       break;
     }
     case kX64I64x2Add: {
@@ -3093,9 +3156,29 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Movmskps(i.OutputRegister(), i.InputSimd128Register(0));
       break;
     }
+    case kX64I32x4DotI16x8S: {
+      __ Pmaddwd(i.OutputSimd128Register(), i.InputSimd128Register(1));
+      break;
+    }
+    case kX64S128Const: {
+      // Emit code for generic constants as all zeros, or ones cases will be
+      // handled separately by the selector.
+      XMMRegister dst = i.OutputSimd128Register();
+      uint32_t imm[4] = {};
+      for (int j = 0; j < 4; j++) {
+        imm[j] = i.InputUint32(j);
+      }
+      SetupSimdImmediateInRegister(tasm(), imm, dst);
+      break;
+    }
     case kX64S128Zero: {
       XMMRegister dst = i.OutputSimd128Register();
       __ Xorps(dst, dst);
+      break;
+    }
+    case kX64S128AllOnes: {
+      XMMRegister dst = i.OutputSimd128Register();
+      __ Pcmpeqd(dst, dst);
       break;
     }
     case kX64I16x8Splat: {
@@ -3607,7 +3690,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Andnps(dst, i.InputSimd128Register(1));
       break;
     }
-    case kX64S8x16Swizzle: {
+    case kX64I8x16Swizzle: {
       DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
       XMMRegister dst = i.OutputSimd128Register();
       XMMRegister mask = i.TempSimd128Register(0);
@@ -3620,7 +3703,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Pshufb(dst, mask);
       break;
     }
-    case kX64S8x16Shuffle: {
+    case kX64I8x16Shuffle: {
       XMMRegister dst = i.OutputSimd128Register();
       XMMRegister tmp_simd = i.TempSimd128Register(0);
       if (instr->InputCount() == 5) {  // only one input operand
@@ -3630,7 +3713,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
           mask[j - 1] = i.InputUint32(j);
         }
 
-        SetupShuffleMaskInTempRegister(tasm(), mask, tmp_simd);
+        SetupSimdImmediateInRegister(tasm(), mask, tmp_simd);
         __ Pshufb(dst, tmp_simd);
       } else {  // two input operands
         DCHECK_EQ(6, instr->InputCount());
@@ -3643,7 +3726,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
             mask1[j - 2] |= (lane < kSimd128Size ? lane : 0x80) << k;
           }
         }
-        SetupShuffleMaskInTempRegister(tasm(), mask1, tmp_simd);
+        SetupSimdImmediateInRegister(tasm(), mask1, tmp_simd);
         __ Pshufb(kScratchDoubleReg, tmp_simd);
         uint32_t mask2[4] = {};
         if (instr->InputAt(1)->IsSimd128Register()) {
@@ -3659,20 +3742,20 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
             mask2[j - 2] |= (lane >= kSimd128Size ? (lane & 0x0F) : 0x80) << k;
           }
         }
-        SetupShuffleMaskInTempRegister(tasm(), mask2, tmp_simd);
+        SetupSimdImmediateInRegister(tasm(), mask2, tmp_simd);
         __ Pshufb(dst, tmp_simd);
         __ Por(dst, kScratchDoubleReg);
       }
       break;
     }
-    case kX64S8x16LoadSplat: {
+    case kX64S128Load8Splat: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pinsrb(i.OutputSimd128Register(), i.MemoryOperand(), 0);
       __ Pxor(kScratchDoubleReg, kScratchDoubleReg);
       __ Pshufb(i.OutputSimd128Register(), kScratchDoubleReg);
       break;
     }
-    case kX64S16x8LoadSplat: {
+    case kX64S128Load16Splat: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pinsrw(i.OutputSimd128Register(), i.MemoryOperand(), 0);
       __ Pshuflw(i.OutputSimd128Register(), i.OutputSimd128Register(),
@@ -3680,7 +3763,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Punpcklqdq(i.OutputSimd128Register(), i.OutputSimd128Register());
       break;
     }
-    case kX64S32x4LoadSplat: {
+    case kX64S128Load32Splat: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       if (CpuFeatures::IsSupported(AVX)) {
         CpuFeatureScope avx_scope(tasm(), AVX);
@@ -3692,39 +3775,49 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       }
       break;
     }
-    case kX64S64x2LoadSplat: {
+    case kX64S128Load64Splat: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Movddup(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
-    case kX64I16x8Load8x8S: {
+    case kX64S128Load8x8S: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pmovsxbw(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
-    case kX64I16x8Load8x8U: {
+    case kX64S128Load8x8U: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pmovzxbw(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
-    case kX64I32x4Load16x4S: {
+    case kX64S128Load16x4S: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pmovsxwd(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
-    case kX64I32x4Load16x4U: {
+    case kX64S128Load16x4U: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pmovzxwd(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
-    case kX64I64x2Load32x2S: {
+    case kX64S128Load32x2S: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pmovsxdq(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
-    case kX64I64x2Load32x2U: {
+    case kX64S128Load32x2U: {
       EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
       __ Pmovzxdq(i.OutputSimd128Register(), i.MemoryOperand());
+      break;
+    }
+    case kX64S128LoadMem32Zero: {
+      EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
+      __ Movd(i.OutputSimd128Register(), i.MemoryOperand());
+      break;
+    }
+    case kX64S128LoadMem64Zero: {
+      EmitOOLTrapIfNeeded(zone(), this, opcode, instr, __ pc_offset());
+      __ Movq(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
     case kX64S32x4Swizzle: {
@@ -3926,10 +4019,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Por(dst, kScratchDoubleReg);
       break;
     }
-    case kX64S1x2AnyTrue:
-    case kX64S1x4AnyTrue:
-    case kX64S1x8AnyTrue:
-    case kX64S1x16AnyTrue: {
+    case kX64V64x2AnyTrue:
+    case kX64V32x4AnyTrue:
+    case kX64V16x8AnyTrue:
+    case kX64V8x16AnyTrue: {
       Register dst = i.OutputRegister();
       XMMRegister src = i.InputSimd128Register(0);
 
@@ -3942,19 +4035,19 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     // comparison instruction used matters, e.g. given 0xff00, pcmpeqb returns
     // 0x0011, pcmpeqw returns 0x0000, ptest will set ZF to 0 and 1
     // respectively.
-    case kX64S1x2AllTrue: {
+    case kX64V64x2AllTrue: {
       ASSEMBLE_SIMD_ALL_TRUE(Pcmpeqq);
       break;
     }
-    case kX64S1x4AllTrue: {
+    case kX64V32x4AllTrue: {
       ASSEMBLE_SIMD_ALL_TRUE(Pcmpeqd);
       break;
     }
-    case kX64S1x8AllTrue: {
+    case kX64V16x8AllTrue: {
       ASSEMBLE_SIMD_ALL_TRUE(Pcmpeqw);
       break;
     }
-    case kX64S1x16AllTrue: {
+    case kX64V8x16AllTrue: {
       ASSEMBLE_SIMD_ALL_TRUE(Pcmpeqb);
       break;
     }
@@ -4256,7 +4349,7 @@ void CodeGenerator::AssembleArchJump(RpoNumber target) {
 
 void CodeGenerator::AssembleArchTrap(Instruction* instr,
                                      FlagsCondition condition) {
-  auto ool = new (zone()) WasmOutOfLineTrap(this, instr);
+  auto ool = zone()->New<WasmOutOfLineTrap>(this, instr);
   Label* tlabel = ool->entry();
   Label end;
   if (condition == kUnorderedEqual) {
@@ -4327,7 +4420,7 @@ static const int kQuadWordSize = 16;
 }  // namespace
 
 void CodeGenerator::FinishFrame(Frame* frame) {
-  auto call_descriptor = linkage()->GetIncomingDescriptor();
+  CallDescriptor* call_descriptor = linkage()->GetIncomingDescriptor();
 
   const RegList saves_fp = call_descriptor->CalleeSavedFPRegisters();
   if (saves_fp != 0) {
@@ -4365,9 +4458,6 @@ void CodeGenerator::AssembleConstructFrame() {
       }
     } else if (call_descriptor->IsJSFunctionCall()) {
       __ Prologue();
-      if (call_descriptor->PushArgumentCount()) {
-        __ pushq(kJavaScriptCallArgCountRegister);
-      }
     } else {
       __ StubPrologue(info()->GetOutputStackFrameType());
       if (call_descriptor->IsWasmFunctionCall()) {
@@ -4439,7 +4529,7 @@ void CodeGenerator::AssembleConstructFrame() {
 
       __ near_call(wasm::WasmCode::kWasmStackOverflow,
                    RelocInfo::WASM_STUB_CALL);
-      ReferenceMap* reference_map = new (zone()) ReferenceMap(zone());
+      ReferenceMap* reference_map = zone()->New<ReferenceMap>(zone());
       RecordSafepoint(reference_map, Safepoint::kNoLazyDeopt);
       __ AssertUnreachable(AbortReason::kUnexpectedReturnFromWasmTrap);
       __ bind(&done);
@@ -4483,7 +4573,7 @@ void CodeGenerator::AssembleConstructFrame() {
   }
 }
 
-void CodeGenerator::AssembleReturn(InstructionOperand* pop) {
+void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
   auto call_descriptor = linkage()->GetIncomingDescriptor();
 
   // Restore registers.
@@ -4516,45 +4606,115 @@ void CodeGenerator::AssembleReturn(InstructionOperand* pop) {
 
   unwinding_info_writer_.MarkBlockWillExit();
 
-  // Might need rcx for scratch if pop_size is too big or if there is a variable
-  // pop count.
+  // We might need rcx and rdx for scratch.
   DCHECK_EQ(0u, call_descriptor->CalleeSavedRegisters() & rcx.bit());
   DCHECK_EQ(0u, call_descriptor->CalleeSavedRegisters() & rdx.bit());
-  size_t pop_size = call_descriptor->StackParameterCount() * kSystemPointerSize;
+  int parameter_count =
+      static_cast<int>(call_descriptor->StackParameterCount());
   X64OperandConverter g(this, nullptr);
+  Register pop_reg = additional_pop_count->IsImmediate()
+                         ? rcx
+                         : g.ToRegister(additional_pop_count);
+  Register scratch_reg = pop_reg == rcx ? rdx : rcx;
+  Register argc_reg =
+      additional_pop_count->IsImmediate() ? pop_reg : scratch_reg;
+#ifdef V8_NO_ARGUMENTS_ADAPTOR
+  // Functions with JS linkage have at least one parameter (the receiver).
+  // If {parameter_count} == 0, it means it is a builtin with
+  // kDontAdaptArgumentsSentinel, which takes care of JS arguments popping
+  // itself.
+  const bool drop_jsargs = frame_access_state()->has_frame() &&
+                           call_descriptor->IsJSFunctionCall() &&
+                           parameter_count != 0;
+#else
+  const bool drop_jsargs = false;
+#endif
   if (call_descriptor->IsCFunctionCall()) {
     AssembleDeconstructFrame();
   } else if (frame_access_state()->has_frame()) {
-    if (pop->IsImmediate() && g.ToConstant(pop).ToInt32() == 0) {
+    if (additional_pop_count->IsImmediate() &&
+        g.ToConstant(additional_pop_count).ToInt32() == 0) {
       // Canonicalize JSFunction return sites for now.
       if (return_label_.is_bound()) {
         __ jmp(&return_label_);
         return;
       } else {
         __ bind(&return_label_);
-        AssembleDeconstructFrame();
       }
-    } else {
-      AssembleDeconstructFrame();
     }
+    if (drop_jsargs) {
+      // Get the actual argument count.
+      __ movq(argc_reg, Operand(rbp, StandardFrameConstants::kArgCOffset));
+    }
+    AssembleDeconstructFrame();
   }
 
-  if (pop->IsImmediate()) {
-    pop_size += g.ToConstant(pop).ToInt32() * kSystemPointerSize;
-    CHECK_LT(pop_size, static_cast<size_t>(std::numeric_limits<int>::max()));
-    __ Ret(static_cast<int>(pop_size), rcx);
+  if (drop_jsargs) {
+    // In addition to the slots given by {additional_pop_count}, we must pop all
+    // arguments from the stack (including the receiver). This number of
+    // arguments is given by max(1 + argc_reg, parameter_count).
+    Label argc_reg_has_final_count;
+    // Exclude the receiver to simplify the computation. We'll account for it at
+    // the end.
+    int parameter_count_withouth_receiver = parameter_count - 1;
+    if (parameter_count_withouth_receiver != 0) {
+      __ cmpq(argc_reg, Immediate(parameter_count_withouth_receiver));
+      __ j(greater_equal, &argc_reg_has_final_count, Label::kNear);
+      __ movq(argc_reg, Immediate(parameter_count_withouth_receiver));
+      __ bind(&argc_reg_has_final_count);
+    }
+    // Add additional pop count.
+    if (additional_pop_count->IsImmediate()) {
+      DCHECK_EQ(pop_reg, argc_reg);
+      int additional_count = g.ToConstant(additional_pop_count).ToInt32();
+      if (additional_count != 0) {
+        __ addq(pop_reg, Immediate(additional_count));
+      }
+    } else {
+      __ addq(pop_reg, argc_reg);
+    }
+    __ PopReturnAddressTo(scratch_reg);
+    __ leaq(rsp, Operand(rsp, pop_reg, times_system_pointer_size,
+                         kSystemPointerSize));  // Also pop the receiver.
+    // We use a return instead of a jump for better return address prediction.
+    __ PushReturnAddressFrom(scratch_reg);
+    __ Ret();
+  } else if (additional_pop_count->IsImmediate()) {
+    int additional_count = g.ToConstant(additional_pop_count).ToInt32();
+    size_t pop_size = (parameter_count + additional_count) * kSystemPointerSize;
+    CHECK_LE(pop_size, static_cast<size_t>(std::numeric_limits<int>::max()));
+    __ Ret(static_cast<int>(pop_size), scratch_reg);
   } else {
-    Register pop_reg = g.ToRegister(pop);
-    Register scratch_reg = pop_reg == rcx ? rdx : rcx;
-    __ popq(scratch_reg);
-    __ leaq(rsp, Operand(rsp, pop_reg, times_8, static_cast<int>(pop_size)));
-    __ jmp(scratch_reg);
+    int pop_size = static_cast<int>(parameter_count * kSystemPointerSize);
+    __ PopReturnAddressTo(scratch_reg);
+    __ leaq(rsp, Operand(rsp, pop_reg, times_system_pointer_size,
+                         static_cast<int>(pop_size)));
+    __ PushReturnAddressFrom(scratch_reg);
+    __ Ret();
   }
 }
 
 void CodeGenerator::FinishCode() { tasm()->PatchConstPool(); }
 
 void CodeGenerator::PrepareForDeoptimizationExits(int deopt_count) {}
+
+void CodeGenerator::IncrementStackAccessCounter(
+    InstructionOperand* source, InstructionOperand* destination) {
+  DCHECK(FLAG_trace_turbo_stack_accesses);
+  if (!info()->IsOptimizing() && !info()->IsWasm()) return;
+  DCHECK_NOT_NULL(debug_name_);
+  auto IncrementCounter = [&](ExternalReference counter) {
+    __ incl(__ ExternalReferenceAsOperand(counter));
+  };
+  if (source->IsAnyStackSlot()) {
+    IncrementCounter(
+        ExternalReference::address_of_load_from_stack_count(debug_name_));
+  }
+  if (destination->IsAnyStackSlot()) {
+    IncrementCounter(
+        ExternalReference::address_of_store_to_stack_count(debug_name_));
+  }
+}
 
 void CodeGenerator::AssembleMove(InstructionOperand* source,
                                  InstructionOperand* destination) {
@@ -4638,6 +4798,11 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
     MoveConstantToRegister(kScratchRegister, src);
     __ movq(dst, kScratchRegister);
   };
+
+  if (FLAG_trace_turbo_stack_accesses) {
+    IncrementStackAccessCounter(source, destination);
+  }
+
   // Dispatch on the source and destination operand kinds.
   switch (MoveType::InferMove(source, destination)) {
     case MoveType::kRegisterToRegister:
@@ -4744,6 +4909,11 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
 
 void CodeGenerator::AssembleSwap(InstructionOperand* source,
                                  InstructionOperand* destination) {
+  if (FLAG_trace_turbo_stack_accesses) {
+    IncrementStackAccessCounter(source, destination);
+    IncrementStackAccessCounter(destination, source);
+  }
+
   X64OperandConverter g(this, nullptr);
   // Dispatch on the source and destination operand kinds.  Not all
   // combinations are possible.
@@ -4768,15 +4938,10 @@ void CodeGenerator::AssembleSwap(InstructionOperand* source,
     case MoveType::kRegisterToStack: {
       if (source->IsRegister()) {
         Register src = g.ToRegister(source);
-        __ pushq(src);
-        frame_access_state()->IncreaseSPDelta(1);
-        unwinding_info_writer_.MaybeIncreaseBaseOffsetAt(__ pc_offset(),
-                                                         kSystemPointerSize);
-        __ movq(src, g.ToOperand(destination));
-        frame_access_state()->IncreaseSPDelta(-1);
-        __ popq(g.ToOperand(destination));
-        unwinding_info_writer_.MaybeIncreaseBaseOffsetAt(__ pc_offset(),
-                                                         -kSystemPointerSize);
+        Operand dst = g.ToOperand(destination);
+        __ movq(kScratchRegister, src);
+        __ movq(src, dst);
+        __ movq(dst, kScratchRegister);
       } else {
         DCHECK(source->IsFPRegister());
         XMMRegister src = g.ToDoubleRegister(source);

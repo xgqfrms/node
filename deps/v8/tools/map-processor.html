@@ -369,17 +369,12 @@ dd {
   z-index: 100;
   display: none;
 }
+#searchBarInput {
+  width: 200px;
+}
+
 </style>
-<script src="./splaytree.js"></script>
-<script src="./codemap.js"></script>
-<script src="./csvparser.js"></script>
-<script src="./consarray.js"></script>
-<script src="./profile.js"></script>
-<script src="./profile_view.js"></script>
-<script src="./logreader.js"></script>
-<script src="./SourceMap.js"></script>
-<script src="./arguments.js"></script>
-<script src="./map-processor.js"></script>
+<script type="module" src="./map-processor.js"></script>
 <script>
 "use strict"
 // =========================================================================
@@ -503,8 +498,23 @@ define(Array.prototype, "histogram", function(mapFn) {
   return histogram;
 });
 
+
 // =========================================================================
 // EventHandlers
+function handleSearchBar(){
+  let searchBar = $('searchBarInput');
+  let searchBarInput = searchBar.value;
+  let selectedMap = V8Map.get(searchBarInput);
+  //removeAllChildren($('mapIdList'));
+  if(selectedMap){
+    let map = selectedMap;
+    document.state.map = map;
+    searchBar.className = "green";
+  } else {
+    searchBar.className = "red";
+  }
+}
+
 function handleBodyLoad() {
   let upload = $('fileReader');
   upload.onclick = (e) => $("file").click();
@@ -1253,13 +1263,23 @@ function transitionTypeToColor(type) {
     <section id="transitionView"></section>
     <br/>
 
+
+    <h2>Search Map by Address</h2>
+    <section id="searchBar"></section>
+    <input type="search" id="searchBarInput" placeholder="Search maps by address..">
+    <button onclick="handleSearchBar()">Search</button>
+    <ul id="mapIdList" title="Map Id List">
+    </ul>
+
+
     <h2>Selected Map</h2>
     <section id="mapDetails"></section>
   </div>
 
   <section>
     <h2>Instructions</h2>
-    <p>Visualize Map trees that have been gathered using <code>--trace-maps</code>.</p>
+    <p>Visualize Map trees that have been gathered using <code>path/to/d8 $FILE --trace-maps</code>.</p>
+    <p>You can inspect the transition tree in DevTools by looking at <code>document.state.timeline.values</code>.
     <h3>Keyboard Shortcuts</h3>
     <dl>
       <dt><kbd>SHIFT</kbd> + <kbd>Arrow Up</kbd></dt>

@@ -311,6 +311,16 @@ const ClassType* TypeVisitor::ComputeType(
     flags = flags | ClassFlag::kGeneratePrint | ClassFlag::kGenerateVerify |
             ClassFlag::kGenerateBodyDescriptor;
   }
+  if (!(flags & ClassFlag::kExtern) &&
+      (flags & ClassFlag::kHasSameInstanceTypeAsParent)) {
+    Error("non-extern Torque-defined classes must have unique instance types");
+  }
+  if ((flags & ClassFlag::kHasSameInstanceTypeAsParent) &&
+      !(flags & ClassFlag::kDoNotGenerateCast || flags & ClassFlag::kIsShape)) {
+    Error(
+        "classes that inherit their instance type must be annotated with "
+        "@doNotGenerateCast");
+  }
 
   return TypeOracle::GetClassType(super_type, decl->name->value, flags,
                                   generates, decl, alias);
@@ -344,14 +354,17 @@ const Type* TypeVisitor::ComputeType(TypeExpression* type_expression) {
                  UnionTypeExpression::DynamicCast(type_expression)) {
     return TypeOracle::GetUnionType(ComputeType(union_type->a),
                                     ComputeType(union_type->b));
-  } else {
-    auto* function_type_exp = FunctionTypeExpression::cast(type_expression);
+  } else if (auto* function_type_exp =
+                 FunctionTypeExpression::DynamicCast(type_expression)) {
     TypeVector argument_types;
     for (TypeExpression* type_exp : function_type_exp->parameters) {
       argument_types.push_back(ComputeType(type_exp));
     }
     return TypeOracle::GetBuiltinPointerType(
         argument_types, ComputeType(function_type_exp->return_type));
+  } else {
+    auto* precomputed = PrecomputedTypeExpression::cast(type_expression);
+    return precomputed->type;
   }
 }
 
@@ -490,9 +503,10 @@ const Type* TypeVisitor::ComputeTypeForStructExpression(
   }
 
   CurrentScope::Scope generic_scope(generic_type->ParentScope());
-  TypeArgumentInference inference(generic_type->generic_parameters(),
-                                  explicit_type_arguments, term_parameters,
-                                  term_argument_types);
+  TypeArgumentInference inference(
+      generic_type->generic_parameters(), explicit_type_arguments,
+      term_parameters,
+      TransformVector<base::Optional<const Type*>>(term_argument_types));
 
   if (inference.HasFailed()) {
     ReportError("failed to infer type arguments for struct ", basic->name,

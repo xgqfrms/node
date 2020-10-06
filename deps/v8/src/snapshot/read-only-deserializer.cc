@@ -35,11 +35,11 @@ void ReadOnlyDeserializer::DeserializeInto(Isolate* isolate) {
   DCHECK(!isolate->builtins()->is_initialized());
 
   {
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     ReadOnlyRoots roots(isolate);
 
     roots.Iterate(this);
-    ro_heap->read_only_space()->RepairFreeListsAfterDeserialization();
+    ro_heap->read_only_space()->RepairFreeSpacesAfterDeserialization();
 
     // Deserialize the Read-only Object Cache.
     for (size_t i = 0;; ++i) {
@@ -55,7 +55,7 @@ void ReadOnlyDeserializer::DeserializeInto(Isolate* isolate) {
   }
 
   if (FLAG_rehash_snapshot && can_rehash()) {
-    isolate_->heap()->InitializeHashSeed();
+    isolate->heap()->InitializeHashSeed();
     Rehash();
   }
 }

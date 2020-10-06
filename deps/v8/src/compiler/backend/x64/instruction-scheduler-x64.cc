@@ -146,6 +146,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64F64x2Qfms:
     case kX64F64x2Pmin:
     case kX64F64x2Pmax:
+    case kX64F64x2Round:
     case kX64F32x4Splat:
     case kX64F32x4ExtractLane:
     case kX64F32x4ReplaceLane:
@@ -171,6 +172,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64F32x4Qfms:
     case kX64F32x4Pmin:
     case kX64F32x4Pmax:
+    case kX64F32x4Round:
     case kX64I64x2Splat:
     case kX64I64x2ExtractLane:
     case kX64I64x2ReplaceLane:
@@ -220,6 +222,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64I32x4GeU:
     case kX64I32x4Abs:
     case kX64I32x4BitMask:
+    case kX64I32x4DotI16x8S:
     case kX64I16x8Splat:
     case kX64I16x8ExtractLaneU:
     case kX64I16x8ExtractLaneS:
@@ -290,16 +293,18 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64S128Xor:
     case kX64S128Not:
     case kX64S128Select:
+    case kX64S128Const:
     case kX64S128Zero:
+    case kX64S128AllOnes:
     case kX64S128AndNot:
-    case kX64S1x2AnyTrue:
-    case kX64S1x2AllTrue:
-    case kX64S1x4AnyTrue:
-    case kX64S1x4AllTrue:
-    case kX64S1x8AnyTrue:
-    case kX64S1x8AllTrue:
-    case kX64S8x16Swizzle:
-    case kX64S8x16Shuffle:
+    case kX64V64x2AnyTrue:
+    case kX64V64x2AllTrue:
+    case kX64V32x4AnyTrue:
+    case kX64V32x4AllTrue:
+    case kX64V16x8AnyTrue:
+    case kX64V16x8AllTrue:
+    case kX64I8x16Swizzle:
+    case kX64I8x16Shuffle:
     case kX64S32x4Swizzle:
     case kX64S32x4Shuffle:
     case kX64S16x8Blend:
@@ -325,8 +330,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64S8x8Reverse:
     case kX64S8x4Reverse:
     case kX64S8x2Reverse:
-    case kX64S1x16AnyTrue:
-    case kX64S1x16AllTrue:
+    case kX64V8x16AnyTrue:
+    case kX64V8x16AllTrue:
       return (instr->addressing_mode() == kMode_None)
                  ? kNoOpcodeFlags
                  : kIsLoadOperation | kHasSideEffect;
@@ -373,16 +378,18 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64Movsd:
     case kX64Movss:
     case kX64Movdqu:
-    case kX64S8x16LoadSplat:
-    case kX64S16x8LoadSplat:
-    case kX64S32x4LoadSplat:
-    case kX64S64x2LoadSplat:
-    case kX64I16x8Load8x8S:
-    case kX64I16x8Load8x8U:
-    case kX64I32x4Load16x4S:
-    case kX64I32x4Load16x4U:
-    case kX64I64x2Load32x2S:
-    case kX64I64x2Load32x2U:
+    case kX64S128Load8Splat:
+    case kX64S128Load16Splat:
+    case kX64S128Load32Splat:
+    case kX64S128Load64Splat:
+    case kX64S128Load8x8S:
+    case kX64S128Load8x8U:
+    case kX64S128Load16x4S:
+    case kX64S128Load16x4U:
+    case kX64S128Load32x2S:
+    case kX64S128Load32x2U:
+    case kX64S128LoadMem32Zero:
+    case kX64S128LoadMem64Zero:
       return instr->HasOutput() ? kIsLoadOperation : kHasSideEffect;
 
     case kX64Peek:

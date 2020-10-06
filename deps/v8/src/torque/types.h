@@ -104,6 +104,7 @@ struct RuntimeType {
 
 class V8_EXPORT_PRIVATE Type : public TypeBase {
  public:
+  Type& operator=(const Type& other) = delete;
   virtual bool IsSubtypeOf(const Type* supertype) const;
 
   // Default rendering for error messages etc.
@@ -164,7 +165,6 @@ class V8_EXPORT_PRIVATE Type : public TypeBase {
   Type(TypeBase::Kind kind, const Type* parent,
        MaybeSpecializationKey specialized_from = base::nullopt);
   Type(const Type& other) V8_NOEXCEPT;
-  Type& operator=(const Type& other) = delete;
   void set_parent(const Type* t) { parent_ = t; }
   int Depth() const;
   virtual std::string ToExplicitString() const = 0;
@@ -660,6 +660,9 @@ class ClassType final : public AggregateType {
     if (IsAbstract()) return false;
     return flags_ & ClassFlag::kGenerateBodyDescriptor || !IsExtern();
   }
+  bool DoNotGenerateCast() const {
+    return flags_ & ClassFlag::kDoNotGenerateCast;
+  }
   bool IsTransient() const override { return flags_ & ClassFlag::kTransient; }
   bool IsAbstract() const { return flags_ & ClassFlag::kAbstract; }
   bool HasSameInstanceTypeAsParent() const {
@@ -700,6 +703,14 @@ class ClassType final : public AggregateType {
   std::vector<ObjectSlotKind> ComputeHeaderSlotKinds() const;
   base::Optional<ObjectSlotKind> ComputeArraySlotKind() const;
   bool HasNoPointerSlots() const;
+  bool HasIndexedFieldsIncludingInParents() const;
+  const Field* GetFieldPreceding(size_t field_index) const;
+
+  // Given that the field exists in this class or a superclass, returns the
+  // specific class that declared the field.
+  const ClassType* GetClassDeclaringField(const Field& f) const;
+
+  std::string GetSliceMacroName(const Field& field) const;
 
   const InstanceTypeConstraints& GetInstanceTypeConstraints() const {
     return decl_->instance_type_constraints;
@@ -730,6 +741,8 @@ class ClassType final : public AggregateType {
             ClassFlags flags, const std::string& generates,
             const ClassDeclaration* decl, const TypeAlias* alias);
 
+  void GenerateSliceAccessor(size_t field_index);
+
   size_t header_size_;
   ResidueClass size_;
   mutable ClassFlags flags_;
@@ -753,6 +766,8 @@ class VisitResult {
     DCHECK(type->IsConstexpr());
   }
   static VisitResult NeverResult();
+  static VisitResult TopTypeResult(std::string top_reason,
+                                   const Type* from_type);
   VisitResult(const Type* type, StackRange stack_range)
       : type_(type), stack_range_(stack_range) {
     DCHECK(!type->IsConstexpr());

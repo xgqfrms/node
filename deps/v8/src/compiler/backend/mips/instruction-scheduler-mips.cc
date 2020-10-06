@@ -57,6 +57,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsF64x2Splat:
     case kMipsF64x2ExtractLane:
     case kMipsF64x2ReplaceLane:
+    case kMipsF64x2Pmin:
+    case kMipsF64x2Pmax:
+    case kMipsF64x2Ceil:
+    case kMipsF64x2Floor:
+    case kMipsF64x2Trunc:
+    case kMipsF64x2NearestInt:
     case kMipsI64x2Add:
     case kMipsI64x2Sub:
     case kMipsI64x2Mul:
@@ -85,6 +91,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsF32x4Splat:
     case kMipsF32x4Sub:
     case kMipsF32x4UConvertI32x4:
+    case kMipsF32x4Pmin:
+    case kMipsF32x4Pmax:
+    case kMipsF32x4Ceil:
+    case kMipsF32x4Floor:
+    case kMipsF32x4Trunc:
+    case kMipsF32x4NearestInt:
     case kMipsFloat32Max:
     case kMipsFloat32Min:
     case kMipsFloat32RoundDown:
@@ -138,6 +150,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsI16x8UConvertI8x16High:
     case kMipsI16x8UConvertI8x16Low:
     case kMipsI16x8Abs:
+    case kMipsI16x8BitMask:
     case kMipsI32x4Add:
     case kMipsI32x4AddHoriz:
     case kMipsI32x4Eq:
@@ -166,6 +179,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsI32x4UConvertI16x8High:
     case kMipsI32x4UConvertI16x8Low:
     case kMipsI32x4Abs:
+    case kMipsI32x4BitMask:
     case kMipsI8x16Add:
     case kMipsI8x16AddSaturateS:
     case kMipsI8x16AddSaturateU:
@@ -195,6 +209,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsI8x16SubSaturateU:
     case kMipsI8x16UConvertI16x8:
     case kMipsI8x16Abs:
+    case kMipsI8x16BitMask:
     case kMipsIns:
     case kMipsLsa:
     case kMipsMaddD:
@@ -238,12 +253,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsS16x8InterleaveRight:
     case kMipsS16x8PackEven:
     case kMipsS16x8PackOdd:
-    case kMipsS1x16AllTrue:
-    case kMipsS1x16AnyTrue:
-    case kMipsS1x4AllTrue:
-    case kMipsS1x4AnyTrue:
-    case kMipsS1x8AllTrue:
-    case kMipsS1x8AnyTrue:
+    case kMipsV8x16AllTrue:
+    case kMipsV8x16AnyTrue:
+    case kMipsV32x4AllTrue:
+    case kMipsV32x4AnyTrue:
+    case kMipsV16x8AllTrue:
+    case kMipsV16x8AnyTrue:
     case kMipsS32x4InterleaveEven:
     case kMipsS32x4InterleaveLeft:
     case kMipsS32x4InterleaveOdd:
@@ -258,8 +273,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsS8x16InterleaveRight:
     case kMipsS8x16PackEven:
     case kMipsS8x16PackOdd:
-    case kMipsS8x16Shuffle:
-    case kMipsS8x16Swizzle:
+    case kMipsI8x16Shuffle:
+    case kMipsI8x16Swizzle:
     case kMipsS8x2Reverse:
     case kMipsS8x4Reverse:
     case kMipsS8x8Reverse:
@@ -300,16 +315,16 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kMipsUlhu:
     case kMipsUlw:
     case kMipsUlwc1:
-    case kMipsS8x16LoadSplat:
-    case kMipsS16x8LoadSplat:
-    case kMipsS32x4LoadSplat:
-    case kMipsS64x2LoadSplat:
-    case kMipsI16x8Load8x8S:
-    case kMipsI16x8Load8x8U:
-    case kMipsI32x4Load16x4S:
-    case kMipsI32x4Load16x4U:
-    case kMipsI64x2Load32x2S:
-    case kMipsI64x2Load32x2U:
+    case kMipsS128Load8Splat:
+    case kMipsS128Load16Splat:
+    case kMipsS128Load32Splat:
+    case kMipsS128Load64Splat:
+    case kMipsS128Load8x8S:
+    case kMipsS128Load8x8U:
+    case kMipsS128Load16x4S:
+    case kMipsS128Load16x4U:
+    case kMipsS128Load32x2S:
+    case kMipsS128Load32x2U:
     case kMipsWord32AtomicPairLoad:
       return kIsLoadOperation;
 

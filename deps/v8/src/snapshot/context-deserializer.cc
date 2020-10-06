@@ -42,7 +42,7 @@ MaybeHandle<Object> ContextDeserializer::Deserialize(
 
   Handle<Object> result;
   {
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     // Keep track of the code space start and end pointers in case new
     // code objects were unserialized
     CodeSpace* code_space = isolate->heap()->code_space();
@@ -74,6 +74,7 @@ void ContextDeserializer::SetupOffHeapArrayBufferBackingStores() {
   for (Handle<JSArrayBuffer> buffer : new_off_heap_array_buffers()) {
     uint32_t store_index = buffer->GetBackingStoreRefForDeserialization();
     auto bs = backing_store(store_index);
+    buffer->AllocateExternalPointerEntries(isolate());
     SharedFlag shared =
         bs && bs->is_shared() ? SharedFlag::kShared : SharedFlag::kNotShared;
     buffer->Setup(shared, bs);
@@ -83,18 +84,15 @@ void ContextDeserializer::SetupOffHeapArrayBufferBackingStores() {
 void ContextDeserializer::DeserializeEmbedderFields(
     v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer) {
   if (!source()->HasMore() || source()->Get() != kEmbedderFieldsData) return;
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   DisallowJavascriptExecution no_js(isolate());
   DisallowCompilation no_compile(isolate());
   DCHECK_NOT_NULL(embedder_fields_deserializer.callback);
   for (int code = source()->Get(); code != kSynchronize;
        code = source()->Get()) {
     HandleScope scope(isolate());
-    int space = code & kSpaceMask;
-    DCHECK_LE(space, kNumberOfSpaces);
-    DCHECK_EQ(code - space, kNewObject);
-    Handle<JSObject> obj(JSObject::cast(GetBackReferencedObject(
-                             static_cast<SnapshotSpace>(space))),
+    SnapshotSpace space = NewObject::Decode(code);
+    Handle<JSObject> obj(JSObject::cast(GetBackReferencedObject(space)),
                          isolate());
     int index = source()->GetInt();
     int size = source()->GetInt();

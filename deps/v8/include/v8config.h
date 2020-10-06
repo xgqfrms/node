@@ -70,6 +70,7 @@
 //  V8_OS_POSIX         - POSIX compatible (mostly everything except Windows)
 //  V8_OS_QNX           - QNX Neutrino
 //  V8_OS_SOLARIS       - Sun Solaris and OpenSolaris
+//  V8_OS_STARBOARD     - Starboard (platform abstraction for Cobalt)
 //  V8_OS_AIX           - AIX
 //  V8_OS_WIN           - Microsoft Windows
 
@@ -93,6 +94,8 @@
 #elif defined(__sun)
 # define V8_OS_POSIX 1
 # define V8_OS_SOLARIS 1
+#elif defined(STARBOARD)
+# define V8_OS_STARBOARD 1
 #elif defined(_AIX)
 #define V8_OS_POSIX 1
 #define V8_OS_AIX 1
@@ -433,6 +436,16 @@
 #define V8_WARN_UNUSED_RESULT /* NOT SUPPORTED */
 #endif
 
+// Helper macro to define no_sanitize attributes only with clang.
+#if defined(__clang__) && defined(__has_attribute)
+#if __has_attribute(no_sanitize)
+#define V8_CLANG_NO_SANITIZE(what) __attribute__((no_sanitize(what)))
+#endif
+#endif
+#if !defined(V8_CLANG_NO_SANITIZE)
+#define V8_CLANG_NO_SANITIZE(what)
+#endif
+
 #if defined(BUILDING_V8_SHARED) && defined(USING_V8_SHARED)
 #error Inconsistent build configuration: To build the V8 shared library \
 set BUILDING_V8_SHARED, to include its headers for linking against the \
@@ -468,6 +481,15 @@ V8 shared library set USING_V8_SHARED.
 #endif
 
 #endif  // V8_OS_WIN
+
+// Support for floating point parameters in calls to C.
+// It's currently enabled only for the platforms listed below. We don't plan
+// to add support for IA32, because it has a totally different approach
+// (using FP stack). As support is added to more platforms, please make sure
+// to list them here in order to enable tests of this functionality.
+#if defined(V8_TARGET_ARCH_X64)
+#define V8_ENABLE_FP_PARAMS_IN_C_LINKAGE
+#endif
 
 // clang-format on
 

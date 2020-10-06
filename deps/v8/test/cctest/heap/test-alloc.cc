@@ -96,6 +96,8 @@ Handle<Object> HeapTester::TestAllocateAfterFailures() {
 
 
 HEAP_TEST(StressHandles) {
+  // For TestAllocateAfterFailures.
+  FLAG_stress_concurrent_allocation = false;
   v8::HandleScope scope(CcTest::isolate());
   v8::Local<v8::Context> env = v8::Context::New(CcTest::isolate());
   env->Enter();
@@ -128,6 +130,8 @@ Handle<AccessorInfo> TestAccessorInfo(
 
 
 TEST(StressJS) {
+  // For TestAllocateAfterFailures in TestGetter.
+  FLAG_stress_concurrent_allocation = false;
   Isolate* isolate = CcTest::i_isolate();
   Factory* factory = isolate->factory();
   v8::HandleScope scope(CcTest::isolate());
@@ -145,8 +149,8 @@ TEST(StressJS) {
 
   // Patch the map to have an accessor for "get".
   Handle<Map> map(function->initial_map(), isolate);
-  Handle<DescriptorArray> instance_descriptors(map->instance_descriptors(),
-                                               isolate);
+  Handle<DescriptorArray> instance_descriptors(
+      map->instance_descriptors(kRelaxedLoad), isolate);
   CHECK_EQ(0, instance_descriptors->number_of_descriptors());
 
   PropertyAttributes attrs = NONE;

@@ -12,11 +12,10 @@
 #ifndef V8_OBJECTS_OBJECTS_INL_H_
 #define V8_OBJECTS_OBJECTS_INL_H_
 
-#include "src/objects/objects.h"
-
 #include "src/base/bits.h"
 #include "src/base/memory.h"
 #include "src/builtins/builtins.h"
+#include "src/common/external-pointer-inl.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory.h"
 #include "src/heap/heap-write-barrier-inl.h"
@@ -30,6 +29,7 @@
 #include "src/objects/keys.h"
 #include "src/objects/literal-objects.h"
 #include "src/objects/lookup-inl.h"  // TODO(jkummerow): Drop.
+#include "src/objects/objects.h"
 #include "src/objects/oddball.h"
 #include "src/objects/property-details.h"
 #include "src/objects/property.h"
@@ -43,7 +43,7 @@
 #include "src/objects/tagged-index.h"
 #include "src/objects/templates.h"
 #include "src/sanitizer/tsan.h"
-#include "torque-generated/class-definitions-tq-inl.h"
+#include "torque-generated/class-definitions-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -65,10 +65,6 @@ int PropertyDetails::field_width_in_words() const {
   if (!FLAG_unbox_double_fields) return 1;
   if (kDoubleSize == kTaggedSize) return 1;
   return representation().IsDouble() ? kDoubleSize / kTaggedSize : 1;
-}
-
-DEF_GETTER(HeapObject, IsSloppyArgumentsElements, bool) {
-  return IsFixedArrayExact(isolate);
 }
 
 DEF_GETTER(HeapObject, IsClassBoilerplate, bool) {
@@ -95,7 +91,7 @@ IS_TYPE_FUNCTION_DEF(SmallOrderedHashTable)
   bool Object::Is##Type(Isolate* isolate) const {                \
     return Is##Type(ReadOnlyRoots(isolate));                     \
   }                                                              \
-  bool Object::Is##Type(OffThreadIsolate* isolate) const {       \
+  bool Object::Is##Type(LocalIsolate* isolate) const {           \
     return Is##Type(ReadOnlyRoots(isolate));                     \
   }                                                              \
   bool Object::Is##Type(ReadOnlyRoots roots) const {             \
@@ -107,7 +103,7 @@ IS_TYPE_FUNCTION_DEF(SmallOrderedHashTable)
   bool HeapObject::Is##Type(Isolate* isolate) const {            \
     return Object::Is##Type(isolate);                            \
   }                                                              \
-  bool HeapObject::Is##Type(OffThreadIsolate* isolate) const {   \
+  bool HeapObject::Is##Type(LocalIsolate* isolate) const {       \
     return Object::Is##Type(isolate);                            \
   }                                                              \
   bool HeapObject::Is##Type(ReadOnlyRoots roots) const {         \
@@ -645,6 +641,25 @@ MaybeHandle<Object> Object::SetElement(Isolate* isolate, Handle<Object> object,
   return value;
 }
 
+void Object::InitExternalPointerField(size_t offset, Isolate* isolate) {
+  i::InitExternalPointerField(field_address(offset), isolate);
+}
+
+void Object::InitExternalPointerField(size_t offset, Isolate* isolate,
+                                      Address value) {
+  i::InitExternalPointerField(field_address(offset), isolate, value);
+}
+
+Address Object::ReadExternalPointerField(size_t offset,
+                                         const Isolate* isolate) const {
+  return i::ReadExternalPointerField(field_address(offset), isolate);
+}
+
+void Object::WriteExternalPointerField(size_t offset, Isolate* isolate,
+                                       Address value) {
+  i::WriteExternalPointerField(field_address(offset), isolate, value);
+}
+
 ObjectSlot HeapObject::RawField(int byte_offset) const {
   return ObjectSlot(FIELD_ADDR(*this, byte_offset));
 }
@@ -703,17 +718,17 @@ ReadOnlyRoots HeapObject::GetReadOnlyRoots(const Isolate* isolate) const {
 DEF_GETTER(HeapObject, map, Map) { return map_word(isolate).ToMap(); }
 
 void HeapObject::set_map(Map value) {
-  if (!value.is_null()) {
 #ifdef VERIFY_HEAP
+  if (FLAG_verify_heap && !value.is_null()) {
     GetHeapFromWritableObject(*this)->VerifyObjectLayoutChange(*this, value);
-#endif
   }
+#endif
   set_map_word(MapWord::FromMap(value));
 #ifndef V8_DISABLE_WRITE_BARRIERS
   if (!value.is_null()) {
     // TODO(1600) We are passing kNullAddress as a slot because maps can never
     // be on an evacuation candidate.
-    MarkingBarrier(*this, ObjectSlot(kNullAddress), value);
+    WriteBarrier::Marking(*this, ObjectSlot(kNullAddress), value);
   }
 #endif
 }
@@ -723,28 +738,28 @@ DEF_GETTER(HeapObject, synchronized_map, Map) {
 }
 
 void HeapObject::synchronized_set_map(Map value) {
-  if (!value.is_null()) {
 #ifdef VERIFY_HEAP
+  if (FLAG_verify_heap && !value.is_null()) {
     GetHeapFromWritableObject(*this)->VerifyObjectLayoutChange(*this, value);
-#endif
   }
+#endif
   synchronized_set_map_word(MapWord::FromMap(value));
 #ifndef V8_DISABLE_WRITE_BARRIERS
   if (!value.is_null()) {
     // TODO(1600) We are passing kNullAddress as a slot because maps can never
     // be on an evacuation candidate.
-    MarkingBarrier(*this, ObjectSlot(kNullAddress), value);
+    WriteBarrier::Marking(*this, ObjectSlot(kNullAddress), value);
   }
 #endif
 }
 
 // Unsafe accessor omitting write barrier.
 void HeapObject::set_map_no_write_barrier(Map value) {
-  if (!value.is_null()) {
 #ifdef VERIFY_HEAP
+  if (FLAG_verify_heap && !value.is_null()) {
     GetHeapFromWritableObject(*this)->VerifyObjectLayoutChange(*this, value);
-#endif
   }
+#endif
   set_map_word(MapWord::FromMap(value));
 }
 
@@ -755,7 +770,7 @@ void HeapObject::set_map_after_allocation(Map value, WriteBarrierMode mode) {
     DCHECK(!value.is_null());
     // TODO(1600) We are passing kNullAddress as a slot because maps can never
     // be on an evacuation candidate.
-    MarkingBarrier(*this, ObjectSlot(kNullAddress), value);
+    WriteBarrier::Marking(*this, ObjectSlot(kNullAddress), value);
   }
 #endif
 }
@@ -780,8 +795,8 @@ void HeapObject::synchronized_set_map_word(MapWord map_word) {
   MapField::Release_Store(*this, map_word);
 }
 
-bool HeapObject::synchronized_compare_and_swap_map_word(MapWord old_map_word,
-                                                        MapWord new_map_word) {
+bool HeapObject::release_compare_and_swap_map_word(MapWord old_map_word,
+                                                   MapWord new_map_word) {
   Tagged_t result =
       MapField::Release_CompareAndSwap(*this, old_map_word, new_map_word);
   return result == static_cast<Tagged_t>(old_map_word.ptr());

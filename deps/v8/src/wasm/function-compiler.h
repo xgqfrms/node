@@ -31,6 +31,7 @@ struct WasmFunction;
 
 class WasmInstructionBuffer final {
  public:
+  WasmInstructionBuffer() = delete;
   ~WasmInstructionBuffer();
   std::unique_ptr<AssemblerBuffer> CreateView();
   std::unique_ptr<uint8_t[]> ReleaseBuffer();
@@ -44,7 +45,6 @@ class WasmInstructionBuffer final {
   void operator delete(void* ptr) { ::operator delete(ptr); }
 
  private:
-  WasmInstructionBuffer() = delete;
   DISALLOW_COPY_AND_ASSIGN(WasmInstructionBuffer);
 };
 
@@ -114,7 +114,8 @@ STATIC_ASSERT(sizeof(WasmCompilationUnit) <= 2 * kSystemPointerSize);
 class V8_EXPORT_PRIVATE JSToWasmWrapperCompilationUnit final {
  public:
   JSToWasmWrapperCompilationUnit(Isolate* isolate, WasmEngine* wasm_engine,
-                                 const FunctionSig* sig, bool is_import,
+                                 const FunctionSig* sig,
+                                 const wasm::WasmModule* module, bool is_import,
                                  const WasmFeatures& enabled_features);
   ~JSToWasmWrapperCompilationUnit();
 
@@ -127,11 +128,13 @@ class V8_EXPORT_PRIVATE JSToWasmWrapperCompilationUnit final {
   // Run a compilation unit synchronously.
   static Handle<Code> CompileJSToWasmWrapper(Isolate* isolate,
                                              const FunctionSig* sig,
+                                             const WasmModule* module,
                                              bool is_import);
 
  private:
   bool is_import_;
   const FunctionSig* sig_;
+  bool use_generic_wrapper_;
   std::unique_ptr<OptimizedCompilationJob> job_;
 };
 

@@ -33,6 +33,7 @@ from testrunner.testproc.rerun import RerunProc
 from testrunner.testproc.shard import ShardProc
 from testrunner.testproc.sigproc import SignalProc
 from testrunner.testproc.timeout import TimeoutProc
+from testrunner.testproc import util
 
 
 BASE_DIR = (
@@ -168,6 +169,7 @@ PROGRESS_INDICATORS = {
   'dots': progress.DotsProgressIndicator,
   'color': progress.ColorProgressIndicator,
   'mono': progress.MonochromeProgressIndicator,
+  'stream': progress.StreamProgressIndicator,
 }
 
 class TestRunnerError(Exception):
@@ -184,6 +186,7 @@ class BuildConfig(object):
 
     self.asan = build_config['is_asan']
     self.cfi_vptr = build_config['is_cfi']
+    self.concurrent_marking = build_config['v8_enable_concurrent_marking']
     self.dcheck_always_on = build_config['dcheck_always_on']
     self.gcov_coverage = build_config['is_gcov_coverage']
     self.is_android = build_config['is_android']
@@ -193,6 +196,8 @@ class BuildConfig(object):
     self.msan = build_config['is_msan']
     self.no_i18n = not build_config['v8_enable_i18n_support']
     self.predictable = build_config['v8_enable_verify_predictable']
+    self.simulator_run = (build_config['target_cpu'] !=
+                          build_config['v8_target_cpu'])
     self.tsan = build_config['is_tsan']
     # TODO(machenbach): We only have ubsan not ubsan_vptr.
     self.ubsan_vptr = build_config['is_ubsan_vptr']
@@ -240,6 +245,24 @@ class BuildConfig(object):
     return '\n'.join(detected_options)
 
 
+def _do_load_build_config(outdir, verbose=False):
+  build_config_path = os.path.join(outdir, "v8_build_config.json")
+  if not os.path.exists(build_config_path):
+    if verbose:
+      print("Didn't find build config: %s" % build_config_path)
+    raise TestRunnerError()
+
+  with open(build_config_path) as f:
+    try:
+      build_config_json = json.load(f)
+    except Exception:  # pragma: no cover
+      print("%s exists but contains invalid json. Is your build up-to-date?"
+            % build_config_path)
+      raise TestRunnerError()
+
+  return BuildConfig(build_config_json)
+
+
 class BaseTestRunner(object):
   def __init__(self, basedir=None):
     self.basedir = basedir or BASE_DIR
@@ -264,6 +287,9 @@ class BaseTestRunner(object):
         # Swarming doesn't print how isolated commands are called. Lets make
         # this less cryptic by printing it ourselves.
         print(' '.join(sys.argv))
+
+        # Kill stray processes from previous tasks on swarming.
+        util.kill_processes_linux()
 
       self._load_build_config(options)
       command.setup(self.target_os, options.device)
@@ -346,9 +372,6 @@ class BaseTestRunner(object):
                       help="Path to a file for storing json results.")
     parser.add_option('--slow-tests-cutoff', type="int", default=100,
                       help='Collect N slowest tests')
-    parser.add_option("--junitout", help="File name of the JUnit output")
-    parser.add_option("--junittestsuite", default="v8tests",
-                      help="The testsuite name in the JUnit output file")
     parser.add_option("--exit-after-n-failures", type="int", default=100,
                       help="Exit after the first N failures instead of "
                            "running all tests. Pass 0 to disable this feature.")
@@ -367,6 +390,10 @@ class BaseTestRunner(object):
     # Test config
     parser.add_option("--command-prefix", default="",
                       help="Prepended to each shell command used to run a test")
+    parser.add_option('--dont-skip-slow-simulator-tests',
+                      help='Don\'t skip more slow tests when using a'
+                      ' simulator.', default=False, action='store_true',
+                      dest='dont_skip_simulator_slow_tests')
     parser.add_option("--extra-flags", action="append", default=[],
                       help="Additional flags to pass to each test command")
     parser.add_option("--isolates", action="store_true", default=False,
@@ -410,7 +437,12 @@ class BaseTestRunner(object):
   def _load_build_config(self, options):
     for outdir in self._possible_outdirs(options):
       try:
-        self.build_config = self._do_load_build_config(outdir, options.verbose)
+        self.build_config = _do_load_build_config(outdir, options.verbose)
+
+        # In auto-detect mode the outdir is always where we found the build config.
+        # This ensures that we'll also take the build products from there.
+        self.outdir = outdir
+        break
       except TestRunnerError:
         pass
 
@@ -442,6 +474,20 @@ class BaseTestRunner(object):
         return
 
       yield options.outdir
+
+      # TODO(machenbach): Temporary fallback to legacy outdir. The
+      # infrastructure switches to the canonical out/build location. But
+      # bisection will keep working with out/Release or out/Debug for a
+      # grace period.
+      if os.path.basename(options.outdir) == 'build':
+        base_dir = os.path.dirname(options.outdir)
+        release_dir = os.path.join(base_dir, 'Release')
+        debug_dir = os.path.join(base_dir, 'Debug')
+        if os.path.exists(release_dir) and not os.path.exists(debug_dir):
+          yield release_dir
+        if os.path.exists(debug_dir) and not os.path.exists(release_dir):
+          yield debug_dir
+
       if options.arch and options.mode:
         yield os.path.join(options.outdir,
                           '%s.%s' % (options.arch, options.mode))
@@ -467,27 +513,6 @@ class BaseTestRunner(object):
     if latest_config:
       print(">>> Latest GN build found: %s" % latest_config)
       return os.path.join(DEFAULT_OUT_GN, latest_config)
-
-  def _do_load_build_config(self, outdir, verbose=False):
-    build_config_path = os.path.join(outdir, "v8_build_config.json")
-    if not os.path.exists(build_config_path):
-      if verbose:
-        print("Didn't find build config: %s" % build_config_path)
-      raise TestRunnerError()
-
-    with open(build_config_path) as f:
-      try:
-        build_config_json = json.load(f)
-      except Exception:  # pragma: no cover
-        print("%s exists but contains invalid json. Is your build up-to-date?"
-              % build_config_path)
-        raise TestRunnerError()
-
-    # In auto-detect mode the outdir is always where we found the build config.
-    # This ensures that we'll also take the build products from there.
-    self.outdir = os.path.dirname(build_config_path)
-
-    return BuildConfig(build_config_json)
 
   def _process_default_options(self, options):
     # We don't use the mode for more path-magic.
@@ -673,12 +698,12 @@ class BaseTestRunner(object):
       self.build_config.arch in ['mipsel', 'mips', 'mips64', 'mips64el'] and
       self.build_config.mips_arch_variant)
 
-    # TODO(machenbach): In GN we can derive simulator run from
-    # target_arch != v8_target_arch in the dumped build config.
     return {
       "arch": self.build_config.arch,
       "asan": self.build_config.asan,
       "byteorder": sys.byteorder,
+      "cfi_vptr": self.build_config.cfi_vptr,
+      "concurrent_marking": self.build_config.concurrent_marking,
       "dcheck_always_on": self.build_config.dcheck_always_on,
       "deopt_fuzzer": False,
       "endurance_fuzzer": False,
@@ -699,7 +724,8 @@ class BaseTestRunner(object):
       "optimize_for_size": "--optimize-for-size" in options.extra_flags,
       "predictable": self.build_config.predictable,
       "simd_mips": simd_mips,
-      "simulator_run": False,
+      "simulator_run": self.build_config.simulator_run and
+                       not options.dont_skip_simulator_slow_tests,
       "system": self.target_os,
       "tsan": self.build_config.tsan,
       "ubsan_vptr": self.build_config.ubsan_vptr,
@@ -800,9 +826,6 @@ class BaseTestRunner(object):
 
   def _create_progress_indicators(self, test_count, options):
     procs = [PROGRESS_INDICATORS[options.progress]()]
-    if options.junitout:
-      procs.append(progress.JUnitTestProgressIndicator(options.junitout,
-                                                       options.junittestsuite))
     if options.json_test_results:
       procs.append(progress.JsonTestProgressIndicator(
         self.framework_name,

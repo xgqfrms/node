@@ -15,7 +15,7 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 class WasmCode;
-}
+}  // namespace wasm
 
 // Forward declarations.
 class AbstractCode;
@@ -29,7 +29,6 @@ class RootVisitor;
 class StackFrameIteratorBase;
 class StringStream;
 class ThreadLocalTop;
-class WasmDebugInfo;
 class WasmInstanceObject;
 class WasmModuleObject;
 
@@ -206,6 +205,7 @@ class StackFrame {
            (type == JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH);
   }
   bool is_wasm_to_js() const { return type() == WASM_TO_JS; }
+  bool is_js_to_wasm() const { return type() == JS_TO_WASM; }
 
   // Accessors.
   Address sp() const { return state_.sp; }
@@ -220,6 +220,11 @@ class StackFrame {
   Address UnpaddedFP() const;
 
   inline Address pc() const;
+
+  // Skip authentication of the PC, when using CFI. Used in the profiler, where
+  // in certain corner-cases we do not use an address on the stack, which would
+  // be signed, as the PC of the frame.
+  inline Address unauthenticated_pc() const;
 
   Address constant_pool() const { return *constant_pool_address(); }
   void set_constant_pool(Address constant_pool) {
@@ -665,6 +670,9 @@ class JavaScriptFrame : public StandardFrame {
   inline Address GetParameterSlot(int index) const;
   Object GetParameter(int index) const override;
   int ComputeParametersCount() const override;
+#ifdef V8_NO_ARGUMENTS_ADAPTOR
+  int GetActualArgumentCount() const;
+#endif
   Handle<FixedArray> GetParameters() const;
 
   // Debugger access.
@@ -996,6 +1004,8 @@ class JsToWasmFrame : public StubFrame {
  public:
   Type type() const override { return JS_TO_WASM; }
 
+  void Iterate(RootVisitor* v) const override;
+
  protected:
   inline explicit JsToWasmFrame(StackFrameIteratorBase* iterator);
 
@@ -1224,6 +1234,7 @@ class V8_EXPORT_PRIVATE StackTraceFrameIterator {
   bool done() const { return iterator_.done(); }
   void Advance();
   void AdvanceOneFrame() { iterator_.Advance(); }
+  int FrameFunctionCount() const;
 
   inline StandardFrame* frame() const;
 
