@@ -1,8 +1,8 @@
-# Modules: `module` API
+# 模块: `module` API
 
 <!--introduced_in=v0.3.7-->
 
-## The `Module` object
+## `Module` 对象
 
 * {Object}
 
