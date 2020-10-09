@@ -1,23 +1,27 @@
-# Modules: CommonJS modules
+# 模块: CommonJS 模块
 
 <!--introduced_in=v0.10.0-->
 
-> Stability: 2 - Stable
+> 稳定性: 2 - 稳定
 
 <!--name=module-->
 
-In the Node.js module system, each file is treated as a separate module. For
-example, consider a file named `foo.js`:
+在 Node.js 模块系统中, 每一个文件每当做一个单独的模块. 
+例如，考虑一个名为 `foo.js 的文件`:
 
 ```js
 const circle = require('./circle.js');
 console.log(`The area of a circle of radius 4 is ${circle.area(4)}`);
 ```
 
+
+在第一行，`foo.js` 加载与 `foo.js` 位于同一个目录中的 `circle.js` 模块.
+
+
 On the first line, `foo.js` loads the module `circle.js` that is in the same
 directory as `foo.js`.
 
-Here are the contents of `circle.js`:
+以下是 `circle.js` 的内容:
 
 ```js
 const { PI } = Math;
